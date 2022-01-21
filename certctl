@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-#[ "$EUID" -ne 0 ] && echo "Please run as root" && exit 1
+[ "$EUID" -ne 0 ] && echo "Please run as root" && exit 1
 
 SCRIPT_NAME=$0
 SCRIPT_FULL_PATH=$(dirname "$0")
@@ -9,7 +9,7 @@ SCRIPT_FULL_PATH=$(dirname "$0")
 CERTBOT_PRODUCTION_URL='https://acme-v02.api.letsencrypt.org/directory'
 CERTBOT_STAGING_URL='https://acme-staging-v02.api.letsencrypt.org/directory'
 
-EMAIL_FILE=${SCRIPT_FULL_PATH}"/certbot_email"
+EMAIL_FILE="/etc/letsencrypt/certbot_email"
 
 # Helper function to output debug messages to STDOUT if the `DEBUG` environment
 # variable is set to 1.
@@ -47,6 +47,44 @@ error() {
   tput -Tscreen setaf 1
   echo "${1}"
   tput -Tscreen sgr0) >&2
+}
+
+# This method may take an extremely long time to complete, be patient.
+# It should be possible to use the same dhparam file for all sites, just
+# specify the same file path under the "ssl_dhparam" parameter in the Nginx
+# server config.
+# The created file should be stored somewhere under /etc/letsencrypt/dhparams/
+# to ensure persistence between restarts.
+create_dhparam() {
+  if [ -z "${DHPARAM_SIZE}" ]; then
+    debug "DHPARAM_SIZE unset, using default of 2048 bits"
+    DHPARAM_SIZE=2048
+  fi
+
+  info "
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  %                        ATTENTION!                       %
+  %                                                         %
+  % This script will now create a ${DHPARAM_SIZE} bit Diffie-Hellman   %
+  % parameter to use during the SSL handshake.              %
+  %                                                         %
+  % >>>>>      This MIGHT take a VERY long time!      <<<<< %
+  %    (Took 65 minutes for 4096 bit on an old 3GHz CPU)    %
+  %                                                         %
+  % However, there is some randomness involved so it might  %
+  % be both faster or slower for you. 2048 is secure enough %
+  % for today and quite fast to generate. These files will  %
+  % only have to be created once so please be patient.      %
+  % A message will be displayed when this process finishes. %
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  "
+  info "Will now output to the following file: '${1}'"
+  openssl dhparam -out "${1}" "${DHPARAM_SIZE}"
+  info "
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  % >>>>>   Diffie-Hellman parameter creation done!   <<<<< %
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  "
 }
 
 # Returns 0 if the parameter is an IPv4 or IPv6 address, 1 otherwise.
@@ -245,19 +283,6 @@ parse_config_file() {
   done
 }
 
-report_message()
-{
-  printf '%s\n' "$1" >&2
-}
-
-report_message_verbose()
-{
-  if [ ${VERBOSE} -gt 0 ]
-  then
-    printf '%s\n' "$1" >&2
-  fi
-}
-
 show_help()
 {
   printf "certbot wrapper $0\n"
@@ -285,11 +310,12 @@ print_debug()
   echo "elliptic curve:  " "${ELLIPTIC_CURVE}"
   echo "authenticator:  " "${CERTBOT_AUTHENTICATOR}"
   echo "COMMAND:     " "${COMMAND}"
-  echo "DOMAINS:     " "${DOMAINS}"
+  echo "DOMAINS:     " "${DOMAINS[@]}"
 }
 
 set_email()
 {
+  mkdir -p $(dirname "${EMAIL_FILE}")
   echo "${1}" > ${EMAIL_FILE}
 }
 
@@ -333,14 +359,14 @@ get_certificate() {
     --preferred-challenges ${challenge_type} \
     --authenticator ${authenticator} \
     ${authenticator_params} \
-    --email "${CERTBOT_EMAIL}" \
+    --email "${EMAIL}" \
     --server "${letsencrypt_url}" \
     --rsa-key-size "${RSA_KEY_SIZE}" \
     --elliptic-curve "${ELLIPTIC_CURVE}" \
     --key-type "${3}" \
     --cert-name "${1}" \
     ${2} \
-    --debug ${force_renew}
+    --debug ${force_renew_flag}
 }
 
 issue_nginx()
@@ -355,9 +381,26 @@ issue_nginx()
     parse_config_file "${conf_file}" certificates
   done
 
+  # Find any mentions of Diffie-Hellman parameters and create them if missing.
+  for conf_file in /etc/nginx/conf.d/*.conf*; do
+    for dh_file in $(parse_dhparams "${conf_file}"); do
+      if [ ! -f "${dh_file}" ]; then
+        warning "Couldn't find the dhparam file '${dh_file}'; creating it..."
+        mkdir -vp "$(dirname "${dh_file}")"
+        create_dhparam "${dh_file}"
+        chmod 600 "${dh_file}"
+      fi
+    done
+  done
+
   # Iterate over each key and make a certificate request for them.
   for cert_name in "${!certificates[@]}"; do
     server_names=(${certificates["$cert_name"]})
+
+    echo ------------
+    echo $cert_name
+    echo ${server_names[@]}
+    echo ------------
 
     # Determine which type of key algorithm to use for this certificate
     # request. Having the algorithm specified in the certificate name will
@@ -381,30 +424,66 @@ issue_nginx()
     # Having the authenticator specified in the certificate name will take
     # precedence over the environmental variable.
     if [[ "${cert_name,,}" =~ (^|[-.])webroot([-.]|$) ]]; then
-        authenticator="webroot"
-        debug "Found mention of 'webroot' in name '${cert_name}"
+      authenticator="webroot"
+      debug "Found mention of 'webroot' in name '${cert_name}"
     elif [[ "${cert_name,,}" =~ (^|[-.])(dns-($(echo ${CERTBOT_DNS_AUTHENTICATORS} | sed 's/ /|/g')))([-.]|$) ]]; then
-        authenticator=${BASH_REMATCH[2]}
-        debug "Found mention of authenticator '${authenticator}' in name '${cert_name}'"
+      authenticator=${BASH_REMATCH[2]}
+      debug "Found mention of authenticator '${authenticator}' in name '${cert_name}'"
     elif [ -n "${CERTBOT_AUTHENTICATOR}" ]; then
-        authenticator="${CERTBOT_AUTHENTICATOR}"
+      authenticator="${CERTBOT_AUTHENTICATOR}"
     else
-        authenticator="webroot"
+      authenticator="webroot"
     fi
 
     # Assemble the list of domains to be included in the request from
     # the parsed 'server_names'
     domain_request=""
     for server_name in "${server_names[@]}"; do
-        domain_request="${domain_request} -d ${server_name}"
+      domain_request="${domain_request} -d ${server_name}"
     done
 
     # Hand over all the info required for the certificate request, and
     # let certbot decide if it is necessary to update the certificate.
     if ! get_certificate "${cert_name}" "${domain_request}" "${key_type}" "${authenticator}"; then
-        error "Certbot failed for '${cert_name}'. Check the logs for details."
+      error "Certbot failed for '${cert_name}'. Check the logs for details."
     fi
 
+  done
+}
+
+issue()
+{
+  local domains=${1}
+
+  echo #domains
+
+  # Iterate over each domain and make a certificate request for them.
+  for domain in "${domains[@]}"; do
+    server_names=(${certificates["$cert_name"]})
+
+    # Determine which type of key algorithm to use for this certificate request.
+    if [ "${USE_ECDSA}" == "1" ]; then
+      key_type="ecdsa"
+    else
+      key_type="rsa"
+    fi
+
+    # Determine the authenticator to use to solve the authentication challenge.
+    if [ -n "${CERTBOT_AUTHENTICATOR}" ]; then
+      authenticator="${CERTBOT_AUTHENTICATOR}"
+    else
+      authenticator="webroot"
+    fi
+
+    # Assemble the list of domains to be included in the request from
+    # the parsed 'server_names'
+    domain_request="-d ${domain}"
+
+    # Hand over all the info required for the certificate request, and
+    # let certbot decide if it is necessary to update the certificate.
+    if ! get_certificate "${domain}" "${domain_request}" "${key_type}" "${authenticator}"; then
+      error "Certbot failed for '${domain}'. Check the logs for details."
+    fi
   done
 }
 
@@ -419,7 +498,6 @@ parse_command()
   COMMAND=""
   EMAIL=""
   NEWEMAIL=""
-  DOMAINS=""
   RSA_KEY_SIZE=""
   ELLIPTIC_CURVE=""
   CERTBOT_AUTHENTICATOR=""
@@ -427,6 +505,8 @@ parse_command()
   USE_ECDSA=0
   FORCE=0
   VERBOSE=0
+
+  DOMAINS=()
 
   while :; do
     case $1 in
@@ -511,7 +591,7 @@ parse_command()
         ;;
       -d|--domain)       # Takes an option argument; ensure it has been specified.
         if [ "$2" ]; then
-          DOMAINS="${DOMAINS} $2"
+          DOMAINS+=("$2")
           shift
         else
           error "ERROR: \"--domain\" requires a non-empty option argument."
@@ -519,7 +599,7 @@ parse_command()
         fi
         ;;
       --domain=?*)
-        DOMAINS="${DOMAINS} ${1#*=}" # Delete everything up to "=" and assign the remainder.
+        DOMAINS+=("${1#*=}") # Delete everything up to "=" and assign the remainder.
         ;;
       --domain=)         # Handle the case of an empty --domain=
         error "ERROR: \"--domain\" requires a non-empty option argument."
@@ -608,7 +688,8 @@ execute_comand()
       fi
 
       #add_project "${ALIAS}" "${LOCATION}"
-      warning "issuing certs for ${DOMAINS}"
+      #warning "issuing certs for ${DOMAINS}"
+      issue "${DOMAINS}"
       return $?
       ;;
     issue-nginx)
