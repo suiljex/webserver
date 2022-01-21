@@ -11,6 +11,240 @@ CERTBOT_STAGING_URL='https://acme-staging-v02.api.letsencrypt.org/directory'
 
 EMAIL_FILE=${SCRIPT_FULL_PATH}"/certbot_email"
 
+# Helper function to output debug messages to STDOUT if the `DEBUG` environment
+# variable is set to 1.
+#
+# $1: String to be printed.
+debug() {
+  if [ ${VERBOSE} -gt 1 ]
+  then
+    echo "${1}"
+  fi
+}
+
+# Helper function to output informational messages to STDOUT.
+#
+# $1: String to be printed.
+info() {
+  echo "${1}"
+}
+
+# Helper function to output warning messages to STDOUT, with bold yellow text.
+#
+# $1: String to be printed.
+warning() {
+  (set +x; tput -Tscreen bold
+  tput -Tscreen setaf 3
+  echo "${1}"
+  tput -Tscreen sgr0)
+}
+
+# Helper function to output error messages to STDERR, with bold red text.
+#
+# $1: String to be printed.
+error() {
+  (set +x; tput -Tscreen bold
+  tput -Tscreen setaf 1
+  echo "${1}"
+  tput -Tscreen sgr0) >&2
+}
+
+# Returns 0 if the parameter is an IPv4 or IPv6 address, 1 otherwise.
+# Can be used as `if is_ip "$something"; then`.
+#
+# $1: the parameter to check if it is an IP address.
+is_ip() {
+  is_ipv4 "$1" || is_ipv6 "$1"
+}
+
+# Returns 0 if the parameter is an IPv4 address, 1 otherwise.
+# Can be used as `if is_ipv4 "$something"; then`.
+#
+# $1: the parameter to check if it is an IPv4 address.
+is_ipv4() {
+  [[ "$1" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
+}
+
+# Returns 0 if the parameter is an IPv6 address, 1 otherwise.
+# Can be used as `if is_ipv6 "$something"; then`.
+#
+# This comes from the amazing answer from David M. Syzdek
+# on stackoverflow: https://stackoverflow.com/a/17871737
+#
+# $1: the parameter to check if it is an IPv6 address.
+is_ipv6() {
+  [[ "${1,,}" =~ ^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$ ]]
+}
+
+# Find lines that contain 'ssl_certificate_key', and try to extract a name from
+# each of these file paths. Each keyfile must be stored at the default location
+# of /etc/letsencrypt/live/<cert_name>/privkey.pem, otherwise we ignore it since
+# it is most likely not a certificate that is managed by certbot.
+#
+# $1: Path to a Nginx configuration file.
+parse_cert_names() {
+  sed -n -r -e 's&^\s*ssl_certificate_key\s+\/etc/letsencrypt/live/(.*)/privkey.pem;.*&\1&p' "$1" | xargs -n1 echo | uniq
+}
+
+# Nginx will answer to any domain name that is written on the line which starts
+# with 'server_name'. A server block may have multiple domain names defined on
+# this line, and a config file may have multiple server blocks. This method will
+# therefore try to extract all domain names and add them to the certificate
+# request being sent. Some things to think about:
+# * Wildcard names must use DNS authentication, else the challenge will fail.
+# * Possible overlappings. This method will find all 'server_names' in a .conf
+#   file inside the conf.d/ folder and attach them to the request. If there are
+#   different primary domains in the same .conf file it will cause some weird
+#   certificates. Should however work fine but is not best practice.
+# * If the following comment "# certbot_domain:<replacement_domain>" is present
+#   the end of the line it will be printed twice in such a fashion that it
+#   encapsulate the server names that should be replaced with this one instead,
+#   like this:
+#       1. certbot_domain:*.example.com
+#       2. certbot_domain:www.example.com
+#       3. certbot_domain:sub.example.com
+#       4. certbot_domain:*.example.com
+# * Unlike the other similar functions this one will not perform "uniq" on the
+#   names, since that would prevent the feature explained above.
+#
+# $1: Path to a Nginx configuration file.
+parse_server_names() {
+  sed -n -r -e 's&^\s*server_name\s+([^;]*);\s*#?(\s*certbot_domain:[^[:space:]]+)?.*$&\2 \1 \2&p' "$1" | xargs -n1 echo
+}
+
+# Return all unique "ssl_certificate_key" file paths.
+#
+# $1: Path to a Nginx configuration file.
+parse_keyfiles() {
+  sed -n -r -e 's&^\s*ssl_certificate_key\s+(.*);.*&\1&p' "$1" | xargs -n1 echo | uniq
+}
+
+# Return all unique "ssl_certificate" file paths.
+#
+# $1: Path to a Nginx configuration file.
+parse_fullchains() {
+  sed -n -r -e 's&^\s*ssl_certificate\s+(.*);.*&\1&p' "$1" | xargs -n1 echo | uniq
+}
+
+# Return all unique "ssl_trusted_certificate" file paths.
+#
+# $1: Path to a Nginx configuration file.
+parse_chains() {
+  sed -n -r -e 's&^\s*ssl_trusted_certificate\s+(.*);.*&\1&p' "$1" | xargs -n1 echo | uniq
+}
+
+# Return all unique "dhparam" file paths.
+#
+# $1: Path to a Nginx configuration file.
+parse_dhparams() {
+  sed -n -r -e 's&^\s*ssl_dhparam\s+(.*);.*&\1&p' "$1" | xargs -n1 echo | uniq
+}
+
+# Given a config file path, return 0 if all SSL related files exist (or there
+# are no files needed to be found). Return 1 otherwise (i.e. error exit code).
+#
+# This function calls the following functions in the specified order:
+#  - parse_keyfiles
+#  - parse_fullchains
+#  - parse_chains
+#  - parse_dhparams
+#
+# $1: Path to a Nginx configuration file.
+allfiles_exist() {
+  local all_exist=0
+  for type in keyfile fullchain chain dhparam; do
+    for path in $(parse_"${type}"s "$1"); do
+      if [[ "${path}" == data:* ]]; then
+        debug "Ignoring ${type} path starting with 'data:' in '${1}'"
+      elif [[ "${path}" == engine:* ]]; then
+        debug "Ignoring ${type} path starting with 'engine:' in '${1}'"
+      elif [ ! -f "${path}" ]; then
+        warning "Could not find ${type} file '${path}' in '${1}'"
+        all_exist=1
+      fi
+    done
+  done
+
+  return ${all_exist}
+}
+
+# Parse the configuration file to find all the 'ssl_certificate_key' and the
+# 'server_name' entries, and aggregate the findings so a single certificate can
+# be ordered for multiple domains if this is desired. Each keyfile must be
+# stored in /etc/letsencrypt/live/<cert_name>/privkey.pem, otherwise the
+# certificate/file will be ignored.
+#
+# If you are using the same associative array between each call to this function
+# it will make sure that only unique domain names are added to each specific
+# key. It will also ignore domain names that start with '~', since these are
+# regex and we cannot handle those.
+#
+# $1: The filepath to the configuration file.
+# $2: An associative bash array that will contain cert_name => server_names
+#     (space-separated) after the call to this function.
+parse_config_file() {
+  local conf_file=${1}
+  local -n certs=${2} # Basically a pointer to the array sent in via $2.
+  debug "Parsing config file '${conf_file}'"
+
+  # Begin by checking if there are any certificates managed by us in the
+  # config file.
+  local cert_names=()
+  for cert_name in $(parse_cert_names "${conf_file}"); do
+    cert_names+=("${cert_name}")
+  done
+  if [ ${#cert_names[@]} -eq 0 ]; then
+    debug "Found no valid certificate declarations in '${conf_file}'; skipping it"
+    return
+  fi
+
+  # Then we look for all the possible server names present in the file.
+  local server_names=()
+  local replacement_domain=""
+  for server_name in $(parse_server_names "${conf_file}"); do
+    # Check if the current server_name line has a comment that tells us to
+    # use a different domain name instead when making the request.
+    if [[ "${server_name}" =~ certbot_domain:(.*) ]]; then
+      if [ "${server_name}" == "certbot_domain:${replacement_domain}" ]; then
+        # We found the end of the special server names.
+        replacement_domain=""
+        continue
+      fi
+      replacement_domain="${BASH_REMATCH[1]}"
+      server_names+=("${replacement_domain}")
+      continue
+    fi
+    if [ -n "${replacement_domain}" ]; then
+      # Just continue in case we are substituting domains.
+      debug "Substituting '${server_name}' with '${replacement_domain}'"
+      continue
+    fi
+
+    # Ignore regex names, since these are not gracefully handled by this
+    # code or certbot.
+    if [[ "${server_name}" =~ ~(.*) ]]; then
+      debug "Ignoring server name '${server_name}' since it looks like a regex and we cannot handle that"
+      continue
+    fi
+
+    server_names+=("${server_name}")
+  done
+  debug "Found the following domain names: ${server_names[*]}"
+
+  # Finally we add the found server names to the certificate names in
+  # the associative array.
+  for cert_name in "${cert_names[@]}"; do
+      if ! [ ${certs["${cert_name}"]+_} ]; then
+          debug "Adding new key '${cert_name}' in array"
+          certs["${cert_name}"]=""
+      else
+          debug "Appending to already existing key '${cert_name}'"
+      fi
+      # Make sure we only add unique entries every time.
+      certs["${cert_name}"]="$(echo ${certs["${cert_name}"]} "${server_names[@]}" | xargs -n1 echo | sort -u | tr '\n' ' ')"
+  done
+}
+
 report_message()
 {
   printf '%s\n' "$1" >&2
@@ -43,11 +277,13 @@ print_debug()
   echo "verbose:     " "${VERBOSE}"
   echo "staging:     " "${STAGING}"
   echo "force renewal:  " "${FORCE}"
+  echo "use ecdsa:  " "${USE_ECDSA}"
   echo "email:       " "${EMAIL}"
   echo "new email:   " "${NEWEMAIL}"
   echo "letsencrypt_url: " "${letsencrypt_url}"
   echo "rsa key size:    " "${RSA_KEY_SIZE}"
   echo "elliptic curve:  " "${ELLIPTIC_CURVE}"
+  echo "authenticator:  " "${CERTBOT_AUTHENTICATOR}"
   echo "COMMAND:     " "${COMMAND}"
   echo "DOMAINS:     " "${DOMAINS}"
 }
@@ -55,6 +291,121 @@ print_debug()
 set_email()
 {
   echo "${1}" > ${EMAIL_FILE}
+}
+
+# Helper function to ask certbot to request a certificate for the given cert
+# name. The CERTBOT_EMAIL environment variable must be defined, so that
+# Let's Encrypt may contact you in case of security issues.
+#
+# $1: The name of the certificate (e.g. domain.rsa.dns-rfc2136)
+# $2: String with all requested domains (e.g. -d domain.org -d www.domain.org)
+# $3: Type of key algorithm to use (rsa or ecdsa)
+# $4: The authenticator to use to solve the challenge
+get_certificate() {
+  local authenticator="${4,,}"
+  local authenticator_params=""
+  local challenge_type=""
+
+  # Add correct parameters for the different authenticator types.
+  if [ "${authenticator}" == "webroot" ]; then
+    challenge_type="http-01"
+    authenticator_params="--webroot-path=/var/www/letsencrypt"
+  elif [[ "${authenticator}" == dns-* ]]; then
+    local configfile="/etc/letsencrypt/${authenticator#dns-}.ini"
+    if [ ! -f "${configfile}" ]; then
+      error "Authenticator is '${authenticator}' but '${configfile}' is missing"
+      return 1
+    fi
+
+    challenge_type="dns-01"
+    authenticator_params="--${authenticator}-credentials=${configfile}"
+    if [ -n "${CERTBOT_DNS_PROPAGATION_SECONDS}" ]; then
+      authenticator_params="${authenticator_params} --${authenticator}-propagation-seconds=${CERTBOT_DNS_PROPAGATION_SECONDS}"
+    fi
+  else
+    error "Unknown authenticator '${authenticator}' for '${1}'"
+    return 1
+  fi
+
+  info "Requesting an ${3^^} certificate for '${1}' (${challenge_type} through ${authenticator})"
+  certbot certonly \
+    --agree-tos --keep -n --text \
+    --preferred-challenges ${challenge_type} \
+    --authenticator ${authenticator} \
+    ${authenticator_params} \
+    --email "${CERTBOT_EMAIL}" \
+    --server "${letsencrypt_url}" \
+    --rsa-key-size "${RSA_KEY_SIZE}" \
+    --elliptic-curve "${ELLIPTIC_CURVE}" \
+    --key-type "${3}" \
+    --cert-name "${1}" \
+    ${2} \
+    --debug ${force_renew}
+}
+
+issue_nginx()
+{
+  # Get all the cert names for which we should create certificate requests and
+  # have them signed, along with the corresponding server names.
+  #
+  # This will return an associative array that looks something like this:
+  # "cert_name" => "server_name1 server_name2"
+  declare -A certificates
+  for conf_file in /etc/nginx/conf.d/*.conf*; do
+    parse_config_file "${conf_file}" certificates
+  done
+
+  # Iterate over each key and make a certificate request for them.
+  for cert_name in "${!certificates[@]}"; do
+    server_names=(${certificates["$cert_name"]})
+
+    # Determine which type of key algorithm to use for this certificate
+    # request. Having the algorithm specified in the certificate name will
+    # take precedence over the environmental variable.
+    if [[ "${cert_name,,}" =~ (^|[-.])ecdsa([-.]|$) ]]; then
+      debug "Found variant of 'ECDSA' in name '${cert_name}"
+      key_type="ecdsa"
+    elif [[ "${cert_name,,}" =~ (^|[-.])ecc([-.]|$) ]]; then
+      debug "Found variant of 'ECC' in name '${cert_name}"
+      key_type="ecdsa"
+    elif [[ "${cert_name,,}" =~ (^|[-.])rsa([-.]|$) ]]; then
+      debug "Found variant of 'RSA' in name '${cert_name}"
+      key_type="rsa"
+    elif [ "${USE_ECDSA}" == "1" ]; then
+      key_type="ecdsa"
+    else
+      key_type="rsa"
+    fi
+
+    # Determine the authenticator to use to solve the authentication challenge.
+    # Having the authenticator specified in the certificate name will take
+    # precedence over the environmental variable.
+    if [[ "${cert_name,,}" =~ (^|[-.])webroot([-.]|$) ]]; then
+        authenticator="webroot"
+        debug "Found mention of 'webroot' in name '${cert_name}"
+    elif [[ "${cert_name,,}" =~ (^|[-.])(dns-($(echo ${CERTBOT_DNS_AUTHENTICATORS} | sed 's/ /|/g')))([-.]|$) ]]; then
+        authenticator=${BASH_REMATCH[2]}
+        debug "Found mention of authenticator '${authenticator}' in name '${cert_name}'"
+    elif [ -n "${CERTBOT_AUTHENTICATOR}" ]; then
+        authenticator="${CERTBOT_AUTHENTICATOR}"
+    else
+        authenticator="webroot"
+    fi
+
+    # Assemble the list of domains to be included in the request from
+    # the parsed 'server_names'
+    domain_request=""
+    for server_name in "${server_names[@]}"; do
+        domain_request="${domain_request} -d ${server_name}"
+    done
+
+    # Hand over all the info required for the certificate request, and
+    # let certbot decide if it is necessary to update the certificate.
+    if ! get_certificate "${cert_name}" "${domain_request}" "${key_type}" "${authenticator}"; then
+        error "Certbot failed for '${cert_name}'. Check the logs for details."
+    fi
+
+  done
 }
 
 parse_command()
@@ -69,8 +420,12 @@ parse_command()
   EMAIL=""
   NEWEMAIL=""
   DOMAINS=""
+  RSA_KEY_SIZE=""
+  ELLIPTIC_CURVE=""
+  CERTBOT_AUTHENTICATOR=""
   STAGING=0
-
+  USE_ECDSA=0
+  FORCE=0
   VERBOSE=0
 
   while :; do
@@ -84,7 +439,7 @@ parse_command()
         then
           COMMAND="issue"
         else
-          report_message "ERROR: More then one command!"
+          error "ERROR: More then one command!"
           return 1
         fi
         ;;
@@ -93,7 +448,7 @@ parse_command()
         then
           COMMAND="issue-nginx"
         else
-          report_message "ERROR: More then one command!"
+          error "ERROR: More then one command!"
           return 1
         fi
         ;;
@@ -102,7 +457,7 @@ parse_command()
         then
           COMMAND="update"
         else
-          report_message "ERROR: More then one command!"
+          error "ERROR: More then one command!"
           return 1
         fi
         ;;
@@ -111,7 +466,7 @@ parse_command()
         then
           COMMAND="set-email"
         else
-          report_message "ERROR: More then one command!"
+          error "ERROR: More then one command!"
           return 1
         fi
 
@@ -125,14 +480,14 @@ parse_command()
         then
           COMMAND="set-email"
         else
-          report_message "ERROR: More then one command!"
+          error "ERROR: More then one command!"
           return 1
         fi
 
         NEWNAME=${1#*=} # Delete everything up to "=" and assign the remainder.
         ;;
       --set-email=)         # Handle the case of an empty --set-email=
-        report_message "ERROR: \"--set-email=\" requires a non-empty argument."
+        error "ERROR: \"--set-email=\" requires a non-empty argument."
         return 1
         ;;
       -s|--staging)
@@ -143,7 +498,7 @@ parse_command()
           EMAIL=$2
           shift
         else
-          report_message "ERROR: \"--email\" requires a non-empty option argument."
+          error "ERROR: \"--email\" requires a non-empty option argument."
           return 1
         fi
         ;;
@@ -151,7 +506,7 @@ parse_command()
         EMAIL=${1#*=} # Delete everything up to "=" and assign the remainder.
         ;;
       --email=)         # Handle the case of an empty --email=
-        report_message "ERROR: \"--email\" requires a non-empty option argument."
+        error "ERROR: \"--email\" requires a non-empty option argument."
         return 1
         ;;
       -d|--domain)       # Takes an option argument; ensure it has been specified.
@@ -159,7 +514,7 @@ parse_command()
           DOMAINS="${DOMAINS} $2"
           shift
         else
-          report_message "ERROR: \"--domain\" requires a non-empty option argument."
+          error "ERROR: \"--domain\" requires a non-empty option argument."
           return 1
         fi
         ;;
@@ -167,7 +522,7 @@ parse_command()
         DOMAINS="${DOMAINS} ${1#*=}" # Delete everything up to "=" and assign the remainder.
         ;;
       --domain=)         # Handle the case of an empty --domain=
-        report_message "ERROR: \"--domain\" requires a non-empty option argument."
+        error "ERROR: \"--domain\" requires a non-empty option argument."
         return 1
         ;;
       --rsa-key-size)       # Takes an option argument; ensure it has been specified.
@@ -175,7 +530,7 @@ parse_command()
           RSA_KEY_SIZE=$2
           shift
         else
-          report_message "ERROR: \"--rsa-key-size\" requires a non-empty option argument."
+          error "ERROR: \"--rsa-key-size\" requires a non-empty option argument."
           return 1
         fi
         ;;
@@ -183,7 +538,7 @@ parse_command()
         RSA_KEY_SIZE=${1#*=} # Delete everything up to "=" and assign the remainder.
         ;;
       --rsa-key-size=)         # Handle the case of an empty --rsa-key-size=
-        report_message "ERROR: \"--rsa-key-size\" requires a non-empty option argument."
+        error "ERROR: \"--rsa-key-size\" requires a non-empty option argument."
         return 1
         ;;
       --elliptic-curve)       # Takes an option argument; ensure it has been specified.
@@ -191,7 +546,7 @@ parse_command()
           ELLIPTIC_CURVE=$2
           shift
         else
-          report_message "ERROR: \"--elliptic-curve\" requires a non-empty option argument."
+          error "ERROR: \"--elliptic-curve\" requires a non-empty option argument."
           return 1
         fi
         ;;
@@ -199,11 +554,30 @@ parse_command()
         ELLIPTIC_CURVE=${1#*=} # Delete everything up to "=" and assign the remainder.
         ;;
       --elliptic-curve=)         # Handle the case of an empty --elliptic-curve==
-        report_message "ERROR: \"--elliptic-curve\" requires a non-empty option argument."
+        error "ERROR: \"--elliptic-curve\" requires a non-empty option argument."
+        return 1
+        ;;
+        --authenticator)       # Takes an option argument; ensure it has been specified.
+        if [ "$2" ]; then
+          CERTBOT_AUTHENTICATOR=$2
+          shift
+        else
+          error "ERROR: \"--elliptic-curve\" requires a non-empty option argument."
+          return 1
+        fi
+        ;;
+      --authenticator=?*)
+        CERTBOT_AUTHENTICATOR=${1#*=} # Delete everything up to "=" and assign the remainder.
+        ;;
+      --authenticator=)         # Handle the case of an empty --authenticator==
+        error "ERROR: \"--authenticator\" requires a non-empty option argument."
         return 1
         ;;
       --force)
-        FORCE=1  # Each -v adds 1 to verbosity.
+        FORCE=1
+        ;;
+      --use-ecdsa)
+        USE_ECDSA=1
         ;;
       -v|--verbose)
         VERBOSE=$((VERBOSE + 1))  # Each -v adds 1 to verbosity.
@@ -213,7 +587,7 @@ parse_command()
       #   break
       #   ;;
       ?*)
-        report_message "ERROR: Unknown option: $1"
+        error "ERROR: Unknown option: $1"
         return 1
         ;;
       *)               # Default case: No more options, so break out of the loop.
@@ -229,22 +603,23 @@ execute_comand()
     issue)
       if [ "${DOMAINS}" == "" ]
       then
-        report_message "ERROR: Domains not specified"
+        error "ERROR: Domains not specified"
         return 1
       fi
 
       #add_project "${ALIAS}" "${LOCATION}"
-      report_message "issuing certs for ${DOMAINS}"
+      warning "issuing certs for ${DOMAINS}"
       return $?
       ;;
     issue-nginx)
       #del_project "${ALIAS}"
-      report_message "issuing certs for nginx hosts"
+      #warning "issuing certs for nginx hosts"
+      issue_nginx
       return $?
       ;;
     update)
       #change_name "${ALIAS}" "${NEWNAME}"
-      report_message "updating certs"
+      warning "updating certs"
       return $?
       ;;
     set-email)
@@ -258,7 +633,7 @@ execute_comand()
       return $?
       ;;
     *)
-      report_message "ERROR: Command not specified"
+      error "ERROR: Command not specified"
       return 1
   esac
 }
@@ -269,6 +644,9 @@ if [ ${RESULT} -ne 0 ]
 then
   exit ${RESULT}
 fi
+
+#Temp
+STAGING=1
 
 [ "${EMAIL}" == "" ] && [ -f ${EMAIL_FILE} ] && EMAIL="$(cat ${EMAIL_FILE})"
 
@@ -281,18 +659,18 @@ fi
 
 # Ensure that an RSA key size is set.
 if [ -z "${RSA_KEY_SIZE}" ]; then
-  report_message_verbose "RSA_KEY_SIZE unset, defaulting to 2048"
+  debug "RSA_KEY_SIZE unset, defaulting to 2048"
   RSA_KEY_SIZE=2048
 fi
 
 # Ensure that an elliptic curve is set.
 if [ -z "${ELLIPTIC_CURVE}" ]; then
-  report_message_verbose "ELLIPTIC_CURVE unset, defaulting to 'secp256r1'"
+  debug "ELLIPTIC_CURVE unset, defaulting to 'secp256r1'"
   ELLIPTIC_CURVE="secp256r1"
 fi
 
 if [ "${FORCE}" = "1" ]; then
-  report_message_verbose "Forcing renewal of certificates"
+  info "Forcing renewal of certificates"
   force_renew_flag="--force-renewal"
 fi
 
