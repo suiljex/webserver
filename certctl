@@ -178,34 +178,6 @@ parse_dhparams() {
   sed -n -r -e 's&^\s*ssl_dhparam\s+(.*);.*&\1&p' "$1" | xargs -n1 echo | uniq
 }
 
-# Given a config file path, return 0 if all SSL related files exist (or there
-# are no files needed to be found). Return 1 otherwise (i.e. error exit code).
-#
-# This function calls the following functions in the specified order:
-#  - parse_keyfiles
-#  - parse_fullchains
-#  - parse_chains
-#  - parse_dhparams
-#
-# $1: Path to a Nginx configuration file.
-allfiles_exist() {
-  local all_exist=0
-  for type in keyfile fullchain chain dhparam; do
-    for path in $(parse_"${type}"s "$1"); do
-      if [[ "${path}" == data:* ]]; then
-        debug "Ignoring ${type} path starting with 'data:' in '${1}'"
-      elif [[ "${path}" == engine:* ]]; then
-        debug "Ignoring ${type} path starting with 'engine:' in '${1}'"
-      elif [ ! -f "${path}" ]; then
-        warning "Could not find ${type} file '${path}' in '${1}'"
-        all_exist=1
-      fi
-    done
-  done
-
-  return ${all_exist}
-}
-
 # Parse the configuration file to find all the 'ssl_certificate_key' and the
 # 'server_name' entries, and aggregate the findings so a single certificate can
 # be ordered for multiple domains if this is desired. Each keyfile must be
@@ -288,6 +260,23 @@ show_help()
   printf "certbot wrapper $0\n"
   printf "Usage:\n"
   printf "\t$0 [-h] [-v]\n"
+  printf "\t$0 [-v] --issue --domain <domain> [--domain <domain>] [--email <email>] [--staging] [--force] [-use-ecdsa] [--rsa-key-size <size>] [--elliptic-curve <curve>] [--authenticator <authenticator>]\n"
+  printf "\t$0 [-v] --issue-nginx [--email <email>] [--staging] [--force] [-use-ecdsa] [--rsa-key-size <size>] [--elliptic-curve <curve>] [--authenticator <authenticator>]\n"
+  printf "\t$0 [-v] --renew\n"
+  printf "\t$0 [-v] --set-email <email>\n"
+  printf "\t\t    --issue - Get certificates for <domain>\n"
+  printf "\t\t    --issue-nginx - Get certificates based on nginx config\n"
+  printf "\t\t    --renew - Renew certificates\n"
+  printf "\t\t    --set-email - Set email\n"
+  printf "\t\t-s, --staging - Use staging servers\n"
+  printf "\t\t-e, --email - Specify email\n"
+  printf "\t\t-d, --domain - Specify domain\n"
+  printf "\t\t    --rsa-key-size - Specify RSA key size\n"
+  printf "\t\t    --elliptic-curve - Specify elliptic curve\n"
+  printf "\t\t    --authenticator - Specify authenticator\n"
+  printf "\t\t    --force - Force mode\n"
+  printf "\t\t    --use-ecdsa - Use ecdsa\n"
+  printf "\t\t-h, --help - Show help\n"
   printf "\t\t-v, --verbose - Verbose mode\n"
 }
 
@@ -298,19 +287,19 @@ print_debug()
     return 1
   fi
 
-  echo "Parameters   " "$0"
-  echo "verbose:     " "${VERBOSE}"
-  echo "staging:     " "${STAGING}"
-  echo "force renewal:  " "${FORCE}"
-  echo "use ecdsa:  " "${USE_ECDSA}"
-  echo "email:       " "${EMAIL}"
-  echo "new email:   " "${NEWEMAIL}"
+  echo "Parameters " "$0"
+  echo "verbose:         " "${VERBOSE}"
+  echo "staging:         " "${STAGING}"
+  echo "force renewal:   " "${FORCE}"
+  echo "use ecdsa:       " "${USE_ECDSA}"
+  echo "email:           " "${EMAIL}"
+  echo "new email:       " "${NEWEMAIL}"
   echo "letsencrypt url: " "${letsencrypt_url}"
   echo "rsa key size:    " "${RSA_KEY_SIZE}"
   echo "elliptic curve:  " "${ELLIPTIC_CURVE}"
-  echo "authenticator:  " "${CERTBOT_AUTHENTICATOR}"
-  echo "COMMAND:     " "${COMMAND}"
-  echo "DOMAINS:     " "${DOMAINS[@]}"
+  echo "authenticator:   " "${CERTBOT_AUTHENTICATOR}"
+  echo "command:         " "${COMMAND}"
+  echo "domains:         " "${DOMAINS[@]}"
 }
 
 set_email()
@@ -379,10 +368,8 @@ issue_nginx()
   declare -A certificates
   for conf_file in /etc/nginx/conf.d/*.conf*; do
     parse_config_file "${conf_file}" certificates
-  done
 
-  # Find any mentions of Diffie-Hellman parameters and create them if missing.
-  for conf_file in /etc/nginx/conf.d/*.conf*; do
+    # Find any mentions of Diffie-Hellman parameters and create them if missing.
     for dh_file in $(parse_dhparams "${conf_file}"); do
       if [ ! -f "${dh_file}" ]; then
         warning "Couldn't find the dhparam file '${dh_file}'; creating it..."
@@ -396,11 +383,6 @@ issue_nginx()
   # Iterate over each key and make a certificate request for them.
   for cert_name in "${!certificates[@]}"; do
     server_names=(${certificates["$cert_name"]})
-
-    echo ------------
-    echo $cert_name
-    echo ${server_names[@]}
-    echo ------------
 
     # Determine which type of key algorithm to use for this certificate
     # request. Having the algorithm specified in the certificate name will
@@ -447,7 +429,6 @@ issue_nginx()
     if ! get_certificate "${cert_name}" "${domain_request}" "${key_type}" "${authenticator}"; then
       error "Certbot failed for '${cert_name}'. Check the logs for details."
     fi
-
   done
 }
 
@@ -642,7 +623,7 @@ parse_command()
         error "ERROR: \"--elliptic-curve\" requires a non-empty option argument."
         return 1
         ;;
-        --authenticator)       # Takes an option argument; ensure it has been specified.
+      --authenticator)       # Takes an option argument; ensure it has been specified.
         if [ "$2" ]; then
           CERTBOT_AUTHENTICATOR=$2
           shift
@@ -667,10 +648,6 @@ parse_command()
       -v|--verbose)
         VERBOSE=$((VERBOSE + 1))  # Each -v adds 1 to verbosity.
         ;;
-      # --)              # End of all options.
-      #   shift
-      #   break
-      #   ;;
       ?*)
         error "ERROR: Unknown option: $1"
         return 1
@@ -691,21 +668,14 @@ execute_comand()
         error "ERROR: Domains not specified"
         return 1
       fi
-
-      #add_project "${ALIAS}" "${LOCATION}"
-      #warning "issuing certs for ${DOMAINS}"
       issue "${DOMAINS}"
       return $?
       ;;
     issue-nginx)
-      #del_project "${ALIAS}"
-      #warning "issuing certs for nginx hosts"
       issue_nginx
       return $?
       ;;
     renew)
-      #change_name "${ALIAS}" "${NEWNAME}"
-      #warning "updating certs"
       renew
       return $?
       ;;
@@ -715,7 +685,6 @@ execute_comand()
         set_email
         return $?
       fi
-
       set_email "${NEWEMAIL}"
       return $?
       ;;
@@ -731,9 +700,6 @@ if [ ${RESULT} -ne 0 ]
 then
   exit ${RESULT}
 fi
-
-#Temp
-STAGING=1
 
 [ "${EMAIL}" == "" ] && [ -f ${EMAIL_FILE} ] && EMAIL="$(cat ${EMAIL_FILE})"
 
@@ -764,5 +730,4 @@ fi
 print_debug
 
 execute_comand
-
 exit $?
