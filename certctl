@@ -305,7 +305,7 @@ print_debug()
   echo "use ecdsa:  " "${USE_ECDSA}"
   echo "email:       " "${EMAIL}"
   echo "new email:   " "${NEWEMAIL}"
-  echo "letsencrypt_url: " "${letsencrypt_url}"
+  echo "letsencrypt url: " "${letsencrypt_url}"
   echo "rsa key size:    " "${RSA_KEY_SIZE}"
   echo "elliptic curve:  " "${ELLIPTIC_CURVE}"
   echo "authenticator:  " "${CERTBOT_AUTHENTICATOR}"
@@ -487,6 +487,11 @@ issue()
   done
 }
 
+renew()
+{
+  certbot renew
+}
+
 parse_command()
 {
   if [ $# -lt 1 ]
@@ -532,10 +537,10 @@ parse_command()
           return 1
         fi
         ;;
-      --update)
+      --renew)
         if [ "${COMMAND}" == "" ]
         then
-          COMMAND="update"
+          COMMAND="renew"
         else
           error "ERROR: More then one command!"
           return 1
@@ -698,9 +703,10 @@ execute_comand()
       issue_nginx
       return $?
       ;;
-    update)
+    renew)
       #change_name "${ALIAS}" "${NEWNAME}"
-      warning "updating certs"
+      #warning "updating certs"
+      renew
       return $?
       ;;
     set-email)
