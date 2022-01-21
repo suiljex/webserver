@@ -1,0 +1,7 @@
+[Unit]
+Description=Let's Encrypt renewal
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/certbot renew --quiet --agree-tos
+ExecStartPost=/usr/bin/run-parts --regex '.*sh$' /etc/letsencrypt/renewal-hooks/custom

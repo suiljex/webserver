@@ -19,11 +19,17 @@ eval ${CMD_INSTALL_PIP} ${PACKAGES_PIP}
 
 eval ${CMD_MKDIR} "/var/www/letsencrypt"
 eval ${CMD_MKDIR} "/etc/letsencrypt"
+eval ${CMD_MKDIR} "/etc/letsencrypt/renewal-hooks/custom"
 eval ${CMD_MKDIR} "/etc/nginx/conf.d"
 
-eval ${CMD_CP} "${SCRIPT_FULL_PATH}/certctl"        "/usr/bin/certctl"
-eval ${CMD_CP} "${SCRIPT_FULL_PATH}/nginx_conf.d/*" "/etc/nginx/conf.d/"
+eval ${CMD_CP} "${SCRIPT_FULL_PATH}/certctl"            "/usr/bin/certctl"
+eval ${CMD_CP} "${SCRIPT_FULL_PATH}/nginx_conf.d/*"     "/etc/nginx/conf.d/"
+eval ${CMD_CP} "${SCRIPT_FULL_PATH}/renewal-hooks/*"    "/etc/letsencrypt/renewal-hooks/custom/"
+eval ${CMD_CP} "${SCRIPT_FULL_PATH}/systemd-services/*" "/etc/systemd/system/"
 
 # chown root "/usr/bin/certctl"
 # chmod u+s  "/usr/bin/certctl"
 chmod +x   "/usr/bin/certctl"
+
+/usr/bin/systemctl daemon-reload
+/usr/bin/systemctl enable certbot_update.timer

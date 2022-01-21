@@ -354,7 +354,7 @@ get_certificate() {
   fi
 
   info "Requesting an ${3^^} certificate for '${1}' (${challenge_type} through ${authenticator})"
-  certbot certonly \
+  /usr/bin/certbot certonly \
     --agree-tos --keep -n --text \
     --preferred-challenges ${challenge_type} \
     --authenticator ${authenticator} \
@@ -489,7 +489,7 @@ issue()
 
 renew()
 {
-  certbot renew
+  /usr/bin/certbot renew --agree-tos
 }
 
 parse_command()
