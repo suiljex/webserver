@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+
+#[ "$EUID" -ne 0 ] && echo "Please run as root" && exit 1
+
+SCRIPT_NAME=$0
+SCRIPT_FULL_PATH=$(dirname "$0")
+
+# URLs used when requesting certificates.
+CERTBOT_PRODUCTION_URL='https://acme-v02.api.letsencrypt.org/directory'
+CERTBOT_STAGING_URL='https://acme-staging-v02.api.letsencrypt.org/directory'
+
+EMAIL_FILE=${SCRIPT_FULL_PATH}"/certbot_email"
+
+report_message()
+{
+  printf '%s\n' "$1" >&2
+}
+
+report_message_verbose()
+{
+  if [ ${VERBOSE} -gt 0 ]
+  then
+    printf '%s\n' "$1" >&2
+  fi
+}
+
+show_help()
+{
+  printf "certbot wrapper $0\n"
+  printf "Usage:\n"
+  printf "\t$0 [-h] [-v]\n"
+  printf "\t\t-v, --verbose - Verbose mode\n"
+}
+
+print_debug()
+{
+  if [ ${VERBOSE} -lt 2 ]
+  then
+    return 1
+  fi
+
+  echo "Parameters   " "$0"
+  echo "verbose:     " "${VERBOSE}"
+  echo "staging:     " "${STAGING}"
+  echo "force renewal:  " "${FORCE}"
+  echo "email:       " "${EMAIL}"
+  echo "new email:   " "${NEWEMAIL}"
+  echo "letsencrypt_url: " "${letsencrypt_url}"
+  echo "rsa key size:    " "${RSA_KEY_SIZE}"
+  echo "elliptic curve:  " "${ELLIPTIC_CURVE}"
+  echo "COMMAND:     " "${COMMAND}"
+  echo "DOMAINS:     " "${DOMAINS}"
+}
+
+set_email()
+{
+  echo "${1}" > ${EMAIL_FILE}
+}
+
+parse_command()
+{
+  if [ $# -lt 1 ]
+  then
+    show_help
+    exit 1
+  fi
+
+  COMMAND=""
+  EMAIL=""
+  NEWEMAIL=""
+  DOMAINS=""
+  STAGING=0
+
+  VERBOSE=0
+
+  while :; do
+    case $1 in
+      -h|-\?|--help)
+        show_help    # Display a usage synopsis.
+        exit 0
+        ;;
+      --issue)
+        if [ "${COMMAND}" == "" ]
+        then
+          COMMAND="issue"
+        else
+          report_message "ERROR: More then one command!"
+          return 1
+        fi
+        ;;
+      --issue-nginx)
+        if [ "${COMMAND}" == "" ]
+        then
+          COMMAND="issue-nginx"
+        else
+          report_message "ERROR: More then one command!"
+          return 1
+        fi
+        ;;
+      --update)
+        if [ "${COMMAND}" == "" ]
+        then
+          COMMAND="update"
+        else
+          report_message "ERROR: More then one command!"
+          return 1
+        fi
+        ;;
+      --set-email)       # Takes an optional argument
+        if [ "${COMMAND}" == "" ]
+        then
+          COMMAND="set-email"
+        else
+          report_message "ERROR: More then one command!"
+          return 1
+        fi
+
+        if [ "$2" ]; then
+          NEWEMAIL=$2
+          shift
+        fi
+        ;;
+      --set-email=?*)
+        if [ "${COMMAND}" == "" ]
+        then
+          COMMAND="set-email"
+        else
+          report_message "ERROR: More then one command!"
+          return 1
+        fi
+
+        NEWNAME=${1#*=} # Delete everything up to "=" and assign the remainder.
+        ;;
+      --set-email=)         # Handle the case of an empty --set-email=
+        report_message "ERROR: \"--set-email=\" requires a non-empty argument."
+        return 1
+        ;;
+      -s|--staging)
+        STAGING=1
+        ;;
+      -e|--email)       # Takes an option argument; ensure it has been specified.
+        if [ "$2" ]; then
+          EMAIL=$2
+          shift
+        else
+          report_message "ERROR: \"--email\" requires a non-empty option argument."
+          return 1
+        fi
+        ;;
+      --email=?*)
+        EMAIL=${1#*=} # Delete everything up to "=" and assign the remainder.
+        ;;
+      --email=)         # Handle the case of an empty --email=
+        report_message "ERROR: \"--email\" requires a non-empty option argument."
+        return 1
+        ;;
+      -d|--domain)       # Takes an option argument; ensure it has been specified.
+        if [ "$2" ]; then
+          DOMAINS="${DOMAINS} $2"
+          shift
+        else
+          report_message "ERROR: \"--domain\" requires a non-empty option argument."
+          return 1
+        fi
+        ;;
+      --domain=?*)
+        DOMAINS="${DOMAINS} ${1#*=}" # Delete everything up to "=" and assign the remainder.
+        ;;
+      --domain=)         # Handle the case of an empty --domain=
+        report_message "ERROR: \"--domain\" requires a non-empty option argument."
+        return 1
+        ;;
+      --rsa-key-size)       # Takes an option argument; ensure it has been specified.
+        if [ "$2" ]; then
+          RSA_KEY_SIZE=$2
+          shift
+        else
+          report_message "ERROR: \"--rsa-key-size\" requires a non-empty option argument."
+          return 1
+        fi
+        ;;
+      --rsa-key-size=?*)
+        RSA_KEY_SIZE=${1#*=} # Delete everything up to "=" and assign the remainder.
+        ;;
+      --rsa-key-size=)         # Handle the case of an empty --rsa-key-size=
+        report_message "ERROR: \"--rsa-key-size\" requires a non-empty option argument."
+        return 1
+        ;;
+      --elliptic-curve)       # Takes an option argument; ensure it has been specified.
+        if [ "$2" ]; then
+          ELLIPTIC_CURVE=$2
+          shift
+        else
+          report_message "ERROR: \"--elliptic-curve\" requires a non-empty option argument."
+          return 1
+        fi
+        ;;
+      --elliptic-curve=?*)
+        ELLIPTIC_CURVE=${1#*=} # Delete everything up to "=" and assign the remainder.
+        ;;
+      --elliptic-curve=)         # Handle the case of an empty --elliptic-curve==
+        report_message "ERROR: \"--elliptic-curve\" requires a non-empty option argument."
+        return 1
+        ;;
+      --force)
+        FORCE=1  # Each -v adds 1 to verbosity.
+        ;;
+      -v|--verbose)
+        VERBOSE=$((VERBOSE + 1))  # Each -v adds 1 to verbosity.
+        ;;
+      # --)              # End of all options.
+      #   shift
+      #   break
+      #   ;;
+      ?*)
+        report_message "ERROR: Unknown option: $1"
+        return 1
+        ;;
+      *)               # Default case: No more options, so break out of the loop.
+        break
+    esac
+    shift
+  done
+}
+
+execute_comand()
+{
+  case ${COMMAND} in
+    issue)
+      if [ "${DOMAINS}" == "" ]
+      then
+        report_message "ERROR: Domains not specified"
+        return 1
+      fi
+
+      #add_project "${ALIAS}" "${LOCATION}"
+      report_message "issuing certs for ${DOMAINS}"
+      return $?
+      ;;
+    issue-nginx)
+      #del_project "${ALIAS}"
+      report_message "issuing certs for nginx hosts"
+      return $?
+      ;;
+    update)
+      #change_name "${ALIAS}" "${NEWNAME}"
+      report_message "updating certs"
+      return $?
+      ;;
+    set-email)
+      if [ "${NEWEMAIL}" == "" ]
+      then
+        set_email
+        return $?
+      fi
+
+      set_email "${NEWEMAIL}"
+      return $?
+      ;;
+    *)
+      report_message "ERROR: Command not specified"
+      return 1
+  esac
+}
+
+parse_command "$@"
+RESULT=$?
+if [ ${RESULT} -ne 0 ]
+then
+  exit ${RESULT}
+fi
+
+[ "${EMAIL}" == "" ] && [ -f ${EMAIL_FILE} ] && EMAIL="$(cat ${EMAIL_FILE})"
+
+# Use the correct challenge URL depending on if we want staging or not.
+if [ "${STAGING}" = "1" ]; then
+  letsencrypt_url=${CERTBOT_STAGING_URL}
+else
+  letsencrypt_url=${CERTBOT_PRODUCTION_URL}
+fi
+
+# Ensure that an RSA key size is set.
+if [ -z "${RSA_KEY_SIZE}" ]; then
+  report_message_verbose "RSA_KEY_SIZE unset, defaulting to 2048"
+  RSA_KEY_SIZE=2048
+fi
+
+# Ensure that an elliptic curve is set.
+if [ -z "${ELLIPTIC_CURVE}" ]; then
+  report_message_verbose "ELLIPTIC_CURVE unset, defaulting to 'secp256r1'"
+  ELLIPTIC_CURVE="secp256r1"
+fi
+
+if [ "${FORCE}" = "1" ]; then
+  report_message_verbose "Forcing renewal of certificates"
+  force_renew_flag="--force-renewal"
+fi
+
+print_debug
+
+execute_comand
+
+exit $?
