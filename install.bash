@@ -14,8 +14,16 @@ CMD_MKDIR="mkdir -p "
 CMD_CP="cp "
 CMD_RM="rm -rf  "
 
-eval ${CMD_INSTALL_APT} ${PACKAGES_APT}
-eval ${CMD_INSTALL_PIP} ${PACKAGES_PIP}
+if [ -f "/etc/debian_version" ]
+then
+  eval ${CMD_INSTALL_APT} ${PACKAGES_APT}
+  eval ${CMD_INSTALL_PIP} ${PACKAGES_PIP}
+else
+  echo "It looks like you are using a non-Debian based distribution."
+  echo "Install \"nginx\" and \"certbot\" mannualy"
+fi
+
+eval ${CMD_RM} "/etc/nginx/sites-enabled/default"
 
 eval ${CMD_MKDIR} "/var/www/letsencrypt"
 eval ${CMD_MKDIR} "/etc/letsencrypt"
@@ -25,11 +33,15 @@ eval ${CMD_MKDIR} "/etc/nginx/conf.d"
 eval ${CMD_CP} "${SCRIPT_FULL_PATH}/certctl"            "/usr/bin/certctl"
 eval ${CMD_CP} "${SCRIPT_FULL_PATH}/nginx_conf.d/*"     "/etc/nginx/conf.d/"
 eval ${CMD_CP} "${SCRIPT_FULL_PATH}/renewal-hooks/*"    "/etc/letsencrypt/renewal-hooks/custom/"
-eval ${CMD_CP} "${SCRIPT_FULL_PATH}/systemd-services/*" "/etc/systemd/system/"
 
-eval ${CMD_RM} "/etc/nginx/sites-enabled/default"
+if [ "$(ps --no-headers -o comm 1)" == "systemd" ]
+then
+  eval ${CMD_CP} "${SCRIPT_FULL_PATH}/systemd-services/*" "/etc/systemd/system/"
+  /usr/bin/systemctl daemon-reload
+  /usr/bin/systemctl enable certbot_update.timer
+else
+  echo "It looks like you are using a distro without systemd "
+  echo "Install certificate auto-renewal manually "
+fi
 
 chmod +x   "/usr/bin/certctl"
-
-/usr/bin/systemctl daemon-reload
-/usr/bin/systemctl enable certbot_update.timer
