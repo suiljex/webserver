@@ -39,6 +39,9 @@ then
   eval ${CMD_CP} "${SCRIPT_FULL_PATH}/systemd-services/*" "/etc/systemd/system/"
   /usr/bin/systemctl daemon-reload
   /usr/bin/systemctl enable certbot_update.timer
+
+  /usr/bin/systemctl start nginx.service
+  /usr/bin/systemctl enable nginx.service
 else
   echo "It looks like you are using a distro without systemd "
   echo "Install certificate auto-renewal manually "

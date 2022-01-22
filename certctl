@@ -14,7 +14,7 @@ EMAIL_FILE="/etc/letsencrypt/certbot_email"
 #
 # $1: String to be printed.
 debug() {
-  if [ ${VERBOSE} -gt 0 ]
+  if [ ${VERBOSE} -ge 1 ]
   then
     echo "${1}"
   fi
@@ -284,7 +284,7 @@ show_help()
 # Print internal variables
 print_debug()
 {
-  if [ ${VERBOSE} -gt 1 ]
+  if [ ${VERBOSE} -ge 2 ]
   then
     echo "Parameters " "$0"
     echo "verbose:         " "${VERBOSE}"
@@ -346,7 +346,7 @@ get_certificate() {
   fi
 
   info "Requesting an ${3^^} certificate for '${1}' (${challenge_type} through ${authenticator})"
-  /usr/bin/certbot certonly \
+  certbot certonly \
     --agree-tos --keep -n --text \
     --preferred-challenges ${challenge_type} \
     --authenticator ${authenticator} \
@@ -478,7 +478,7 @@ issue()
 # Renew certificates
 renew()
 {
-  /usr/bin/certbot renew --agree-tos
+  certbot renew --agree-tos
 }
 
 # Parse user input
@@ -744,6 +744,11 @@ RESULT=$?
 if [ ${RESULT} -ne 0 ]
 then
   exit ${RESULT}
+fi
+
+if [ ${VERBOSE} -ge 3 ]
+then
+  set -o xtrace
 fi
 
 # Use the correct challenge URL depending on if we want staging or not.
