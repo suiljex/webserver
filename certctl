@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-[ "$EUID" -ne 0 ] && echo "Please run as root" && exit 1
-
 SCRIPT_NAME=$0
 SCRIPT_FULL_PATH=$(dirname "$0")
 
@@ -16,7 +14,7 @@ EMAIL_FILE="/etc/letsencrypt/certbot_email"
 #
 # $1: String to be printed.
 debug() {
-  if [ ${VERBOSE} -gt 1 ]
+  if [ ${VERBOSE} -gt 0 ]
   then
     echo "${1}"
   fi
@@ -255,53 +253,58 @@ parse_config_file() {
   done
 }
 
+# Print help
 show_help()
 {
   printf "certbot wrapper $0\n"
   printf "Usage:\n"
   printf "\t$0 [-h] [-v]\n"
-  printf "\t$0 [-v] --issue --domain <domain> [--domain <domain>] [--email <email>] [--staging] [--force] [-use-ecdsa] [--rsa-key-size <size>] [--elliptic-curve <curve>] [--authenticator <authenticator>]\n"
-  printf "\t$0 [-v] --issue-nginx [--email <email>] [--staging] [--force] [-use-ecdsa] [--rsa-key-size <size>] [--elliptic-curve <curve>] [--authenticator <authenticator>]\n"
+  printf "\t$0 [-v] --issue --domain <domain> [--domain <domain>] [ options ]\n"
+  printf "\t$0 [-v] --issue-nginx [ options ]\n"
   printf "\t$0 [-v] --renew\n"
   printf "\t$0 [-v] --set-email <email>\n"
   printf "\t\t    --issue - Get certificates for <domain>\n"
   printf "\t\t    --issue-nginx - Get certificates based on nginx config\n"
   printf "\t\t    --renew - Renew certificates\n"
   printf "\t\t    --set-email - Set email\n"
-  printf "\t\t-s, --staging - Use staging servers\n"
+  printf "\t\t-s, --staging - Use staging servers (default: disabled) [env: STAGING=<0|1>]\n"
   printf "\t\t-e, --email - Specify email\n"
   printf "\t\t-d, --domain - Specify domain\n"
-  printf "\t\t    --rsa-key-size - Specify RSA key size\n"
-  printf "\t\t    --elliptic-curve - Specify elliptic curve\n"
-  printf "\t\t    --authenticator - Specify authenticator\n"
-  printf "\t\t    --force - Force mode\n"
-  printf "\t\t    --use-ecdsa - Use ecdsa\n"
+  printf "\t\t    --dhparam-size - The size of the Diffie-Hellman parameters (default: 2048) [env: DHPARAM_SIZE=<number>]\n"
+  printf "\t\t    --rsa-key-size - Specify RSA key size (default: 2048) [env: RSA_KEY_SIZE=<number>]\n"
+  printf "\t\t    --elliptic-curve - Specify elliptic curve (default: secp256r1) [env: ELLIPTIC_CURVE=<string>]\n"
+  printf "\t\t    --authenticator - Specify authenticator (default: webroot) [env: CERTBOT_AUTHENTICATOR=<string>]\n"
+  printf "\t\t    --dns-propagation-seconds -The number of seconds to wait for the DNS challenge to propagate (default: certbot's default) [env: CERTBOT_DNS_PROPAGATION_SECONDS=<number>]\n"
+  printf "\t\t    --force - Force mode (default: disabled)\n"
+  printf "\t\t    --use-ecdsa - Use ecdsa (default: disabled) [env: USE_ECDSA=<0|1>]\n"
   printf "\t\t-h, --help - Show help\n"
   printf "\t\t-v, --verbose - Verbose mode\n"
 }
 
+# Print internal variables
 print_debug()
 {
-  if [ ${VERBOSE} -lt 2 ]
+  if [ ${VERBOSE} -gt 1 ]
   then
-    return 1
+    echo "Parameters " "$0"
+    echo "verbose:         " "${VERBOSE}"
+    echo "staging:         " "${STAGING}"
+    echo "force renewal:   " "${FORCE}"
+    echo "use ecdsa:       " "${USE_ECDSA}"
+    echo "email:           " "${CERTBOT_EMAIL}"
+    echo "new email:       " "${NEWEMAIL}"
+    # echo "letsencrypt url: " "${letsencrypt_url}"
+    echo "dhparam size:    " "${DHPARAM_SIZE}"
+    echo "rsa key size:    " "${RSA_KEY_SIZE}"
+    echo "elliptic curve:  " "${ELLIPTIC_CURVE}"
+    echo "authenticator:   " "${CERTBOT_AUTHENTICATOR}"
+    echo "dns propagarion: " "${CERTBOT_DNS_PROPAGATION_SECONDS}"
+    echo "command:         " "${COMMAND}"
+    echo "domains:         " "${DOMAINS[@]}"
   fi
-
-  echo "Parameters " "$0"
-  echo "verbose:         " "${VERBOSE}"
-  echo "staging:         " "${STAGING}"
-  echo "force renewal:   " "${FORCE}"
-  echo "use ecdsa:       " "${USE_ECDSA}"
-  echo "email:           " "${EMAIL}"
-  echo "new email:       " "${NEWEMAIL}"
-  echo "letsencrypt url: " "${letsencrypt_url}"
-  echo "rsa key size:    " "${RSA_KEY_SIZE}"
-  echo "elliptic curve:  " "${ELLIPTIC_CURVE}"
-  echo "authenticator:   " "${CERTBOT_AUTHENTICATOR}"
-  echo "command:         " "${COMMAND}"
-  echo "domains:         " "${DOMAINS[@]}"
 }
 
+# Save the email to ${EMAIL_FILE} so that it can be used instead --email flag
 set_email()
 {
   mkdir -p $(dirname "${EMAIL_FILE}")
@@ -348,7 +351,7 @@ get_certificate() {
     --preferred-challenges ${challenge_type} \
     --authenticator ${authenticator} \
     ${authenticator_params} \
-    --email "${EMAIL}" \
+    --email "${CERTBOT_EMAIL}" \
     --server "${letsencrypt_url}" \
     --rsa-key-size "${RSA_KEY_SIZE}" \
     --elliptic-curve "${ELLIPTIC_CURVE}" \
@@ -358,6 +361,7 @@ get_certificate() {
     --debug ${force_renew_flag}
 }
 
+# Get certificates based on nginx configuration
 issue_nginx()
 {
   # Get all the cert names for which we should create certificate requests and
@@ -366,7 +370,7 @@ issue_nginx()
   # This will return an associative array that looks something like this:
   # "cert_name" => "server_name1 server_name2"
   declare -A certificates
-  for conf_file in /etc/nginx/conf.d/*.conf*; do
+  for conf_file in /etc/nginx/conf.d/*.conf* /etc/nginx/sites-enabled/*; do
     parse_config_file "${conf_file}" certificates
 
     # Find any mentions of Diffie-Hellman parameters and create them if missing.
@@ -430,13 +434,14 @@ issue_nginx()
       error "Certbot failed for '${cert_name}'. Check the logs for details."
     fi
   done
+
+  return 0
 }
 
+# Get certificates based on user input
 issue()
 {
   local domains=${1}
-
-  echo #domains
 
   # Iterate over each domain and make a certificate request for them.
   for domain in "${domains[@]}"; do
@@ -466,13 +471,17 @@ issue()
       error "Certbot failed for '${domain}'. Check the logs for details."
     fi
   done
+
+  return 0
 }
 
+# Renew certificates
 renew()
 {
   /usr/bin/certbot renew --agree-tos
 }
 
+# Parse user input
 parse_command()
 {
   if [ $# -lt 1 ]
@@ -482,11 +491,13 @@ parse_command()
   fi
 
   COMMAND=""
-  EMAIL=""
+  CERTBOT_EMAIL=""
   NEWEMAIL=""
   RSA_KEY_SIZE=""
+  DHPARAM_SIZE=""
   ELLIPTIC_CURVE=""
   CERTBOT_AUTHENTICATOR=""
+  CERTBOT_DNS_PROPAGATION_SECONDS=""
   STAGING=0
   USE_ECDSA=0
   FORCE=0
@@ -550,7 +561,7 @@ parse_command()
           return 1
         fi
 
-        NEWNAME=${1#*=} # Delete everything up to "=" and assign the remainder.
+        NEWEMAIL=${1#*=} # Delete everything up to "=" and assign the remainder.
         ;;
       --set-email=)         # Handle the case of an empty --set-email=
         error "ERROR: \"--set-email=\" requires a non-empty argument."
@@ -561,7 +572,7 @@ parse_command()
         ;;
       -e|--email)       # Takes an option argument; ensure it has been specified.
         if [ "$2" ]; then
-          EMAIL=$2
+          CERTBOT_EMAIL=$2
           shift
         else
           error "ERROR: \"--email\" requires a non-empty option argument."
@@ -569,7 +580,7 @@ parse_command()
         fi
         ;;
       --email=?*)
-        EMAIL=${1#*=} # Delete everything up to "=" and assign the remainder.
+        CERTBOT_EMAIL=${1#*=} # Delete everything up to "=" and assign the remainder.
         ;;
       --email=)         # Handle the case of an empty --email=
         error "ERROR: \"--email\" requires a non-empty option argument."
@@ -619,7 +630,7 @@ parse_command()
       --elliptic-curve=?*)
         ELLIPTIC_CURVE=${1#*=} # Delete everything up to "=" and assign the remainder.
         ;;
-      --elliptic-curve=)         # Handle the case of an empty --elliptic-curve==
+      --elliptic-curve=)         # Handle the case of an empty --elliptic-curve=
         error "ERROR: \"--elliptic-curve\" requires a non-empty option argument."
         return 1
         ;;
@@ -628,15 +639,47 @@ parse_command()
           CERTBOT_AUTHENTICATOR=$2
           shift
         else
-          error "ERROR: \"--elliptic-curve\" requires a non-empty option argument."
+          error "ERROR: \"--authenticator\" requires a non-empty option argument."
           return 1
         fi
         ;;
       --authenticator=?*)
         CERTBOT_AUTHENTICATOR=${1#*=} # Delete everything up to "=" and assign the remainder.
         ;;
-      --authenticator=)         # Handle the case of an empty --authenticator==
+      --authenticator=)         # Handle the case of an empty --authenticator=
         error "ERROR: \"--authenticator\" requires a non-empty option argument."
+        return 1
+        ;;
+      --dhparam-size)       # Takes an option argument; ensure it has been specified.
+        if [ "$2" ]; then
+          DHPARAM_SIZE=$2
+          shift
+        else
+          error "ERROR: \"--dhparam-size\" requires a non-empty option argument."
+          return 1
+        fi
+        ;;
+      --dhparam-size=?*)
+        DHPARAM_SIZE=${1#*=} # Delete everything up to "=" and assign the remainder.
+        ;;
+      --dhparam-size=)         # Handle the case of an empty --dhparam-size=
+        error "ERROR: \"--dhparam-size\" requires a non-empty option argument."
+        return 1
+        ;;
+      --dns-propagation-seconds)       # Takes an option argument; ensure it has been specified.
+        if [ "$2" ]; then
+          CERTBOT_DNS_PROPAGATION_SECONDS=$2
+          shift
+        else
+          error "ERROR: \"--dns-propagation-seconds\" requires a non-empty option argument."
+          return 1
+        fi
+        ;;
+      --dns-propagation-seconds=?*)
+        CERTBOT_DNS_PROPAGATION_SECONDS=${1#*=} # Delete everything up to "=" and assign the remainder.
+        ;;
+      --dns-propagation-seconds=)         # Handle the case of an empty --dns-propagation-seconds=
+        error "ERROR: \"--dns-propagation-seconds\" requires a non-empty option argument."
         return 1
         ;;
       --force)
@@ -659,6 +702,7 @@ parse_command()
   done
 }
 
+# Execute user commands
 execute_comand()
 {
   case ${COMMAND} in
@@ -701,14 +745,15 @@ then
   exit ${RESULT}
 fi
 
-[ "${EMAIL}" == "" ] && [ -f ${EMAIL_FILE} ] && EMAIL="$(cat ${EMAIL_FILE})"
-
 # Use the correct challenge URL depending on if we want staging or not.
 if [ "${STAGING}" = "1" ]; then
   letsencrypt_url=${CERTBOT_STAGING_URL}
 else
   letsencrypt_url=${CERTBOT_PRODUCTION_URL}
 fi
+
+# Read email from file if --email flag is not specified
+[ "${CERTBOT_EMAIL}" == "" ] && [ -f ${EMAIL_FILE} ] && CERTBOT_EMAIL="$(cat ${EMAIL_FILE})"
 
 # Ensure that an RSA key size is set.
 if [ -z "${RSA_KEY_SIZE}" ]; then
@@ -722,12 +767,15 @@ if [ -z "${ELLIPTIC_CURVE}" ]; then
   ELLIPTIC_CURVE="secp256r1"
 fi
 
+# Use force mode
 if [ "${FORCE}" = "1" ]; then
   info "Forcing renewal of certificates"
   force_renew_flag="--force-renewal"
 fi
 
 print_debug
+
+[ "$EUID" -ne 0 ] && error "ERROR: Not root" && exit 1
 
 execute_comand
 exit $?
