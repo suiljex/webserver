@@ -275,7 +275,7 @@ show_help()
   printf "\t\t    --elliptic-curve - Specify elliptic curve (default: secp256r1) [env: ELLIPTIC_CURVE=<string>]\n"
   printf "\t\t    --authenticator - Specify authenticator (default: webroot) [env: CERTBOT_AUTHENTICATOR=<string>]\n"
   printf "\t\t    --dns-propagation-seconds -The number of seconds to wait for the DNS challenge to propagate (default: certbot's default) [env: CERTBOT_DNS_PROPAGATION_SECONDS=<number>]\n"
-  printf "\t\t    --force - Force mode (default: disabled)\n"
+  printf "\t\t-f, --force - Force mode (default: disabled)\n"
   printf "\t\t    --use-ecdsa - Use ecdsa (default: disabled) [env: USE_ECDSA=<0|1>]\n"
   printf "\t\t-h, --help - Show help\n"
   printf "\t\t-v, --verbose - Verbose mode\n"
@@ -682,7 +682,7 @@ parse_command()
         error "ERROR: \"--dns-propagation-seconds\" requires a non-empty option argument."
         return 1
         ;;
-      --force)
+      -f|--force)
         FORCE=1
         ;;
       --use-ecdsa)
