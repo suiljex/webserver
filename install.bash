@@ -44,4 +44,6 @@ else
   echo "Install certificate auto-renewal manually "
 fi
 
-chmod +x   "/usr/bin/certctl"
+chown root "/usr/bin/certctl"
+chgrp root "/usr/bin/certctl"
+chmod 755  "/usr/bin/certctl"
