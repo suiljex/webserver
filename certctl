@@ -705,6 +705,7 @@ parse_command()
 # Execute user commands
 execute_comand()
 {
+  debug "Trying to execute command: ${COMMAND}"
   case ${COMMAND} in
     issue)
       if [ "${DOMAINS}" == "" ]
@@ -751,9 +752,14 @@ if [ "${STAGING}" = "1" ]; then
 else
   letsencrypt_url=${CERTBOT_PRODUCTION_URL}
 fi
+debug "letsencrypt_url set to ${letsencrypt_url}"
 
 # Read email from file if --email flag is not specified
-[ "${CERTBOT_EMAIL}" == "" ] && [ -f ${EMAIL_FILE} ] && CERTBOT_EMAIL="$(cat ${EMAIL_FILE})"
+if [ -z "${CERTBOT_EMAIL}" ]; then
+  debug "CERTBOT_EMAIL unset, trying to read email from ${EMAIL_FILE}"
+  [ -f ${EMAIL_FILE} ] && CERTBOT_EMAIL="$(cat ${EMAIL_FILE})"
+  [ -z "${CERTBOT_EMAIL}" ] || debug "CERTBOT_EMAIL set to ${CERTBOT_EMAIL}"
+fi
 
 # Ensure that an RSA key size is set.
 if [ -z "${RSA_KEY_SIZE}" ]; then
