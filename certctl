@@ -276,7 +276,7 @@ show_help()
   printf "\t\t    --authenticator - Specify authenticator (default: webroot) [env: CERTBOT_AUTHENTICATOR=<string>]\n"
   printf "\t\t    --dns-propagation-seconds -The number of seconds to wait for the DNS challenge to propagate (default: certbot's default) [env: CERTBOT_DNS_PROPAGATION_SECONDS=<number>]\n"
   printf "\t\t-f, --force - Force mode (default: disabled)\n"
-  printf "\t\t    --use-ecdsa - Use ecdsa (default: disabled) [env: USE_ECDSA=<0|1>]\n"
+  printf "\t\t    --cryptography - Use cryptography (default: ecdsa) [env: CRYPTOGRAPHY=<rsa|ecdsa>]\n"
   printf "\t\t-h, --help - Show help\n"
   printf "\t\t-v, --verbose - Verbose mode\n"
 }
@@ -290,7 +290,7 @@ print_debug()
     echo "verbose:         " "${VERBOSE}"
     echo "staging:         " "${STAGING}"
     echo "force renewal:   " "${FORCE}"
-    echo "use ecdsa:       " "${USE_ECDSA}"
+    echo "cryptography:    " "${CRYPTOGRAPHY}"
     echo "email:           " "${CERTBOT_EMAIL}"
     echo "new email:       " "${NEWEMAIL}"
     # echo "letsencrypt url: " "${letsencrypt_url}"
@@ -400,10 +400,12 @@ issue_nginx()
     elif [[ "${cert_name,,}" =~ (^|[-.])rsa([-.]|$) ]]; then
       debug "Found variant of 'RSA' in name '${cert_name}"
       key_type="rsa"
-    elif [ "${USE_ECDSA}" == "1" ]; then
+    elif [ "${CRYPTOGRAPHY}" == "rsa" ]; then
+      key_type="rsa"
+    elif [ "${CRYPTOGRAPHY}" == "ecdsa" ]; then
       key_type="ecdsa"
     else
-      key_type="rsa"
+      key_type="ecdsa"
     fi
 
     # Determine the authenticator to use to solve the authentication challenge.
@@ -448,10 +450,12 @@ issue()
     server_names=(${certificates["$cert_name"]})
 
     # Determine which type of key algorithm to use for this certificate request.
-    if [ "${USE_ECDSA}" == "1" ]; then
+    if [ "${CRYPTOGRAPHY}" == "ecdsa" ]; then
       key_type="ecdsa"
-    else
+    elif [ "${CRYPTOGRAPHY}" == "rsa" ]; then
       key_type="rsa"
+    else
+      key_type="ecdsa"
     fi
 
     # Determine the authenticator to use to solve the authentication challenge.
@@ -498,8 +502,8 @@ parse_command()
   ELLIPTIC_CURVE=""
   CERTBOT_AUTHENTICATOR=""
   CERTBOT_DNS_PROPAGATION_SECONDS=""
+  CRYPTOGRAPHY=""
   STAGING=0
-  USE_ECDSA=0
   FORCE=0
   VERBOSE=0
 
@@ -685,8 +689,21 @@ parse_command()
       -f|--force)
         FORCE=1
         ;;
-      --use-ecdsa)
-        USE_ECDSA=1
+      --cryptography)       # Takes an option argument; ensure it has been specified.
+        if [ "$2" ]; then
+          CRYPTOGRAPHY=$2
+          shift
+        else
+          error "ERROR: \"--cryptography\" requires a non-empty option argument."
+          return 1
+        fi
+        ;;
+      --cryptography=?*)
+        CRYPTOGRAPHY=${1#*=} # Delete everything up to "=" and assign the remainder.
+        ;;
+      --cryptography=)         # Handle the case of an empty --cryptography=
+        error "ERROR: \"--cryptography\" requires a non-empty option argument."
+        return 1
         ;;
       -v|--verbose)
         VERBOSE=$((VERBOSE + 1))  # Each -v adds 1 to verbosity.
