@@ -38,7 +38,7 @@ if [ "$(ps --no-headers -o comm 1)" == "systemd" ]
 then
   eval ${CMD_CP} "${SCRIPT_FULL_PATH}/systemd-services/*" "/etc/systemd/system/"
   /usr/bin/systemctl daemon-reload
-  /usr/bin/systemctl enable certbot_update.timer
+  /usr/bin/systemctl enable certbot-renewal.timer
 
   /usr/bin/systemctl start nginx.service
   /usr/bin/systemctl enable nginx.service
